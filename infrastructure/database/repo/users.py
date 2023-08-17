@@ -1,7 +1,10 @@
+import datetime
 from typing import Optional
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.sql.functions import func
 
 from infrastructure.database.models import User
 from infrastructure.database.repo.base import BaseRepo
@@ -10,34 +13,25 @@ from infrastructure.database.repo.base import BaseRepo
 class UserRepo(BaseRepo):
     async def get_or_create_user(
         self,
-        user_id: int,
-        full_name: str,
-        language: str,
+        telegram_id: int,
+        first_name: str,
         username: Optional[str] = None,
     ):
-        """
-        Creates or updates a new user in the database and returns the user object.
-        :param user_id: The user's ID.
-        :param full_name: The user's full name.
-        :param language: The user's language.
-        :param username: The user's username. It's an optional parameter.
-        :return: User object, None if there was an error while making a transaction.
-        """
 
         insert_stmt = select(User).from_statement(
             insert(User)
             .values(
-                user_id=user_id,
+                telegram_id=telegram_id,
                 username=username,
-                full_name=full_name,
-                language=language,
+                first_name=first_name,
+                added_at=datetime.datetime.utcnow()
             )
             .returning(User)
             .on_conflict_do_update(
-                index_elements=[User.user_id],
+                index_elements=[User.telegram_id],
                 set_=dict(
                     username=username,
-                    full_name=full_name,
+                    first_name=first_name,
                 ),
             )
         )
@@ -45,3 +39,27 @@ class UserRepo(BaseRepo):
 
         await self.session.commit()
         return result.first()
+
+    async def add_word(self, user_id: int):
+        user = await self.session.execute(select(User).where(User.telegram_id == user_id))
+        user = user.scalar()
+        user.words += 1
+        await self.session.commit()
+        return user.words
+
+    async def get_words_count_by_id(self, user_id: int) -> int:
+        user = await self.session.execute(select(User).where(User.telegram_id == user_id))
+        user = user.scalar()
+        return user.words
+
+    async def users_count(self) -> int:
+        length = await self.session.execute(select(User))
+        return len(length.scalars().all())
+
+    async def get_biggest_words(self):
+        result = await self.session.execute(select(User).order_by(User.words.desc()).limit(20))
+        return result.scalars().all()
+
+    async def get_users_today(self) -> int:
+        result = await self.session.execute(select(User).filter(func.date(User.added_at) == date.today()))
+        return len(result.scalars().all())

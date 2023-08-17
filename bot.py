@@ -6,17 +6,21 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage, DefaultKeyBuilder
 
+
+from infrastructure.database.setup import create_engine, create_metadata, create_session_pool
 from tgbot.config import load_config, Config
 from tgbot.handlers import routers_list
 from tgbot.middlewares.config import ConfigMiddleware
+from tgbot.middlewares.database import DatabaseMiddleware
+from tgbot.middlewares.ad import AdMiddleware
 from tgbot.services import broadcaster
 
 
 async def on_startup(bot: Bot, admin_ids: list[int]):
-    await broadcaster.broadcast(bot, admin_ids, "Бот був запущений")
+    await broadcaster.broadcast(bot, admin_ids, "Бот запущен")
 
 
-def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=None):
+def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=None, ad_provider_token=None):
     """
     Register global middlewares for the given dispatcher.
     Global middlewares here are the ones that are applied to all the handlers (you specify the type of update)
@@ -25,11 +29,13 @@ def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=Non
     :type dp: Dispatcher
     :param config: The configuration object from the loaded configuration.
     :param session_pool: Optional session pool object for the database using SQLAlchemy.
+    :param ad_provider_token: Ad token.
     :return: None
     """
     middleware_types = [
         ConfigMiddleware(config),
-        # DatabaseMiddleware(session_pool),
+        DatabaseMiddleware(session_pool),
+        AdMiddleware(ad_provider_token)
     ]
 
     for middleware_type in middleware_types:
@@ -92,9 +98,14 @@ async def main():
     bot = Bot(token=config.tg_bot.token, parse_mode="HTML")
     dp = Dispatcher(storage=storage)
 
+    engine = create_engine(config.db)
+    db_pool = create_session_pool(engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(create_metadata())
+
     dp.include_routers(*routers_list)
 
-    register_global_middlewares(dp, config)
+    register_global_middlewares(dp, config, db_pool, config.misc.ad_provider_token)
 
     await on_startup(bot, config.tg_bot.admin_ids)
     await dp.start_polling(bot)
@@ -104,4 +115,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logging.error("Бот був вимкнений!")
+        logging.error("Bot stopped!")
