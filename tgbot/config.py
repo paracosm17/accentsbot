@@ -24,10 +24,10 @@ class DbConfig:
         The port where the database server is listening.
     """
 
-    host: str
-    password: str
-    user: str
-    database: str
+    host: str = ""
+    password: str = ""
+    user: str = ""
+    database: str = ""
     port: int = 5432
 
     # For SQLAlchemy
@@ -51,6 +51,10 @@ class DbConfig:
             database=self.database,
         )
         return uri.render_as_string(hide_password=False)
+
+    @staticmethod
+    def construct_sqlite_url(database_name: str = "database.db"):
+        return f"sqlite+aiosqlite:///{database_name}"
 
     @staticmethod
     def from_env(env: Env):
@@ -132,20 +136,14 @@ class RedisConfig:
 
 @dataclass
 class Miscellaneous:
-    """
-    Miscellaneous configuration class.
+    ad_provider_token: Optional[str]
 
-    This class holds settings for various other parameters.
-    It merely serves as a placeholder for settings that are not part of other categories.
-
-    Attributes
-    ----------
-    other_params : str, optional
-        A string used to hold other various parameters as required (default is None).
-    """
-
-    other_params: str = None
-
+    @staticmethod
+    def from_env(env: Env):
+        ad_provider_token = env.str("AD_PROVIDER_TOKEN")
+        return Miscellaneous(
+            ad_provider_token=ad_provider_token
+        )
 
 @dataclass
 class Config:
@@ -187,7 +185,7 @@ def load_config(path: str = None) -> Config:
 
     return Config(
         tg_bot=TgBot.from_env(env),
-        # db=DbConfig.from_env(env),
-        # redis=RedisConfig.from_env(env),
-        misc=Miscellaneous(),
+        db=DbConfig(),
+        redis=RedisConfig.from_env(env),
+        misc=Miscellaneous.from_env(env),
     )

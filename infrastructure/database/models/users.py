@@ -1,41 +1,23 @@
+import datetime
 from typing import Optional
 
+from sqlalchemy import BIGINT, Integer, DateTime
 from sqlalchemy import String
-from sqlalchemy import text, BIGINT, Boolean, true
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
-from .base import Base, TimestampMixin, TableNameMixin
+from .base import Base, TimestampMixin
 
 
-class User(Base, TimestampMixin, TableNameMixin):
-    """
-    This class represents a User in the application.
-    If you want to learn more about SQLAlchemy and Alembic, you can check out the following link to my course:
-    https://www.udemy.com/course/sqlalchemy-alembic-bootcamp/?referralCode=E9099C5B5109EB747126
+class User(Base):
+    __tablename__ = "user"
 
-    Attributes:
-        user_id (Mapped[int]): The unique identifier of the user.
-        username (Mapped[Optional[str]]): The username of the user.
-        full_name (Mapped[str]): The full name of the user.
-        active (Mapped[bool]): Indicates whether the user is active or not.
-        language (Mapped[str]): The language preference of the user.
-
-    Methods:
-        __repr__(): Returns a string representation of the User object.
-
-    Inherited Attributes:
-        Inherits from Base, TimestampMixin, and TableNameMixin classes, which provide additional attributes and functionality.
-
-    Inherited Methods:
-        Inherits methods from Base, TimestampMixin, and TableNameMixin classes, which provide additional functionality.
-
-    """
-    user_id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_id: Mapped[int] = mapped_column(BIGINT, index=True, unique=True)
     username: Mapped[Optional[str]] = mapped_column(String(128))
-    full_name: Mapped[str] = mapped_column(String(128))
-    active: Mapped[bool] = mapped_column(Boolean, server_default=true())
-    language: Mapped[str] = mapped_column(String(10), server_default=text("'en'"))
+    first_name: Mapped[str] = mapped_column(String(128))
+    words = mapped_column(Integer, nullable=False, default=0)
+    added_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     def __repr__(self):
-        return f"<User {self.user_id} {self.username} {self.full_name}>"
+        return f"<User {self.telegram_id} {self.username} {self.first_name}>"
