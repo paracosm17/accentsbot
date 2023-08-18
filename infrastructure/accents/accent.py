@@ -1,6 +1,6 @@
 import os
 import pickle
-
+from aiogram.utils.markdown import hbold
 import spacy
 
 ru_nlp = spacy.load('ru_core_news_md')
@@ -20,6 +20,35 @@ class Accenter:
         self.text = text
         self.lemmas = lemmas
         self.wordforms = wordforms
+        self.vowels = {
+            'А́': hbold('A'),
+            'а́': hbold('А'),
+
+            'О́': hbold('О'),
+            'о́': hbold('О'),
+
+            'Е́': hbold('Е'),
+            'е́': hbold('Е'),
+
+            'У́': hbold('У'),
+            'у́': hbold('У'),
+
+            'И́': hbold('И'),
+            'и́': hbold('И'),
+
+            'Ы́': hbold('Ы'),
+            'ы́': hbold('Ы'),
+
+            'Э́': hbold('Э'),
+            'э́': hbold('Э'),
+
+            'Ю́': hbold('Ю'),
+            'ю́': hbold('Ю'),
+
+            'Я́': hbold('Я'),
+            'я́': hbold('Я'),
+
+        }
 
     def compatible(self, interpretation, lemma, tag):
         if lemma in self.lemmas:
@@ -138,5 +167,15 @@ class Accenter:
             res += words[i]["whitespace"]
         return res
 
-    def result(self) -> str:
-        return self.accentuate(self.text)
+    def __str__(self) -> str:
+        text = self.accentuate(self.text)
+        if len(text) <= 200:
+            return text
+
+        for k, v in self.vowels.items():
+            text = text.replace(k, v)
+
+        return text
+
+    def __repr__(self):
+        return self.__str__()

@@ -5,7 +5,7 @@ from typing import List
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 words_path = os.path.join(base_dir, "words.json")
-with open(words_path, "r", encoding="utf-8") as file:
+with open(words_path, encoding="utf-8") as file:
     words = json.load(file)
 
 
