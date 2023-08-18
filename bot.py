@@ -20,7 +20,7 @@ async def on_startup(bot: Bot, admin_ids: list[int]):
     await broadcaster.broadcast(bot, admin_ids, "Бот запущен")
 
 
-def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=None, ad_provider_token=None):
+def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=None):
     """
     Register global middlewares for the given dispatcher.
     Global middlewares here are the ones that are applied to all the handlers (you specify the type of update)
@@ -29,18 +29,20 @@ def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=Non
     :type dp: Dispatcher
     :param config: The configuration object from the loaded configuration.
     :param session_pool: Optional session pool object for the database using SQLAlchemy.
-    :param ad_provider_token: Ad token.
     :return: None
     """
     middleware_types = [
         ConfigMiddleware(config),
-        DatabaseMiddleware(session_pool),
-        AdMiddleware(ad_provider_token)
+        DatabaseMiddleware(session_pool)
     ]
 
     for middleware_type in middleware_types:
         dp.message.outer_middleware(middleware_type)
         dp.callback_query.outer_middleware(middleware_type)
+
+    if len(config.misc.ad_provider_token):
+        logging.error(config.misc.ad_provider_token)
+        dp.update.outer_middleware(AdMiddleware(config.misc.ad_provider_token))
 
 
 def setup_logging():
@@ -58,11 +60,11 @@ def setup_logging():
     Example usage:
         setup_logging()
     """
-    log_level = logging.INFO
+    log_level = logging.ERROR
     bl.basic_colorized_config(level=log_level)
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.ERROR,
         format="%(filename)s:%(lineno)d #%(levelname)-8s [%(asctime)s] - %(name)s - %(message)s",
     )
     logger = logging.getLogger(__name__)
@@ -105,7 +107,7 @@ async def main():
 
     dp.include_routers(*routers_list)
 
-    register_global_middlewares(dp, config, db_pool, config.misc.ad_provider_token)
+    register_global_middlewares(dp, config, db_pool)
 
     await on_startup(bot, config.tg_bot.admin_ids)
     await dp.start_polling(bot)
