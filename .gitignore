@@ -67,3 +67,6 @@ cache/
 *.db
 *.sqlite
 *.sqlite3
+
+# Other
+dev/
