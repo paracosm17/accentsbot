@@ -62,4 +62,4 @@ async def word(call: CallbackQuery, callback_data: MyCallback, repo: RequestsRep
 
 @router.message(F.text, F.not_contains("/"))
 async def make_accent(message: Message):
-    await message.answer(hcode(Accenter(message.text).result()))
+    await message.answer(str(Accenter(message.text)))
