@@ -40,9 +40,8 @@ def register_global_middlewares(dp: Dispatcher, config: Config, session_pool=Non
         dp.message.outer_middleware(middleware_type)
         dp.callback_query.outer_middleware(middleware_type)
 
-    if len(config.misc.ad_provider_token):
-        logging.error(config.misc.ad_provider_token)
-        dp.update.outer_middleware(AdMiddleware(config.misc.ad_provider_token))
+
+    dp.update.outer_middleware(AdMiddleware(config.misc.ad_provider_token))
 
 
 def setup_logging():
