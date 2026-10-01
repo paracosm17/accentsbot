@@ -1,28 +1,32 @@
-import os
 import json
+import os
 from random import randint
-from typing import List
+from typing import List, Union
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 words_path = os.path.join(base_dir, "words.json")
+
 with open(words_path, encoding="utf-8") as file:
     words = json.load(file)
 
 
 class Word:
-    def __init__(self, id: int = "random") -> None:
+    def __init__(self, id: Union[int, str] = "random") -> None:
         self.data = words
-        self.id = self.normalize_id(id)
-        self.word: dict = self.data[self.id]
+        self.index = self.normalize_id(id)
+        self.word: dict = self.data[self.index]
+        self.id: int = self.word["id"]
 
-    def normalize_id(self, id: int):
+    def normalize_id(self, id: Union[int, str]) -> int:
         if id == "random":
-            return randint(1, len(self.data) - 1)
+            return randint(0, len(self.data) - 1)
+
         if isinstance(id, int):
-            if 0 < int(id) < len(self.data):
-                return int(id)
-            raise IndexError
-        raise TypeError
+            if 1 <= id <= len(self.data):
+                return id - 1
+            raise IndexError(f"word id must be between 1 and {len(self.data)}")
+
+        raise TypeError("id must be an integer or 'random'")
 
     @property
     def variants(self) -> List[str]:
@@ -32,5 +36,5 @@ class Word:
     def right(self) -> str:
         return self.word["right"]
 
-    def get_all_words(self):
-        return [i["right"] for i in self.data]
+    def get_all_words(self) -> List[str]:
+        return [item["right"] for item in self.data]

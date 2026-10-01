@@ -1,29 +1,55 @@
 from aiogram import Router
-from aiogram.filters.command import Command
-from aiogram.types import Message
+from aiogram.filters import Command, CommandObject
+from aiogram.types import Message, ErrorEvent
 
-from tgbot.filters.admin import AdminFilter
 from infrastructure.database.repo.requests import RequestsRepo
+from tgbot.filters.admin import AdminFilter
+from tgbot.services.check_active import check_active_users
+
 
 admin_router = Router()
 admin_router.message.filter(AdminFilter())
 
 
-@admin_router.message(Command("stats"))
-async def stats(message: Message, repo: RequestsRepo):
-    users = await repo.users.get_biggest_words()
-    msg = ""
+@admin_router.message(Command("ban"))
+async def ban_user(message: Message, command: CommandObject, repo: RequestsRepo):
+    arg = command.args
+    if arg and arg.isdigit():
+        arg = int(arg)
+        if arg > 9223372036854775807:
+            await message.reply("Слишком большой id.")
+        else:
+            banned = await repo.users.ban_user(arg)
+            if banned:
+                await message.reply("Успешно забанен.")
+            else:
+                await message.reply("В боте нет такого пользователя.")
+    else:
+        await message.reply("Введите id пользователя. /ban some_id")
 
-    for index, user in enumerate(users):
-        if user.username:
-            msg += f"{index+1}. @{user.username} - {user.words}\n"
-            continue
-        msg += f'{index+1}. <a href="tg://user?id={user.telegram_id}">{user.first_name}</a> - {user.words}\n'
 
-    count_users = await repo.users.users_count()
-    msg += f"\nВсего пользователей: {count_users}"
+@admin_router.message(Command("bot"))
+async def admin_stats(message: Message, repo: RequestsRepo):
+    await message.reply(f"""Всего пользователей: {await repo.users.users_count()}
+Из них активных: {await repo.users.users_count(only_active=True)}
 
-    users_today = await repo.users.get_users_today()
-    msg += f"\nНовых пользователей за сегодня: {users_today}"
+Активность:
+За день: {await repo.users.get_users_active_count_by_days(1)}
+За неделю: {await repo.users.get_users_active_count_by_days(7)}
+За месяц: {await repo.users.get_users_active_count_by_days(31)}
+За год: {await repo.users.get_users_active_count_by_days(365)}
 
-    await message.answer(msg)
+Новые пользователи:
+За день: {await repo.users.get_users_created_count_by_days(1)}
+За неделю: {await repo.users.get_users_created_count_by_days(7)}
+За месяц: {await repo.users.get_users_created_count_by_days(31)}
+За год: {await repo.users.get_users_created_count_by_days(365)}
+""")
+
+
+@admin_router.message(Command("checkactiveusers"))
+async def checkactiveusers(message: Message, repo: RequestsRepo):
+    await message.reply("Начинаю проверку...")
+    users_ids = await repo.users.get_all_users_ids()
+    active_count = await check_active_users(bot=message.bot, users=users_ids, repo=repo)
+    await message.reply(f"Активных пользоваталей: {active_count}\nВсего пользователей: {len(users_ids)}")
