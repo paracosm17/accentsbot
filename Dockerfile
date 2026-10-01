@@ -1,10 +1,19 @@
 FROM python:3.11-slim
 
-ENV BOT_NAME=$BOT_NAME
+RUN apt-get update && \
+    apt-get install -y locales && \
+    sed -i -e 's/# ru_RU.UTF-8 UTF-8/ru_RU.UTF-8 UTF-8/' /etc/locale.gen && \
+    dpkg-reconfigure --frontend=noninteractive locales
+ENV LANG ru_RU.UTF-8
+ENV LC_ALL ru_RU.UTF-8
+
+ENV BOT_NAME=simple_bot
 
 WORKDIR /usr/src/app/${BOT_NAME}
 
 COPY requirements.txt /usr/src/app/${BOT_NAME}
-RUN pip install -U pip setuptools wheel && pip install -U spacy && pip install https://github.com/explosion/spacy-models/releases/download/ru_core_news_sm-3.6.0/ru_core_news_sm-3.6.0.tar.gz
+RUN pip install -U pip setuptools wheel
 RUN pip install -r /usr/src/app/${BOT_NAME}/requirements.txt
+RUN python -m spacy download ru_core_news_md
+
 COPY . /usr/src/app/${BOT_NAME}
