@@ -1,0 +1,83 @@
+name: accentsbot-dev
+
+x-app-image: &app-image
+  build:
+    context: .
+    args:
+      VCS_REF: local
+  image: accentsbot:local
+
+x-app-env: &app-env
+  APP_ENV: local
+  LOG_LEVEL: INFO
+  APP_SMOKE_MODE: "true"
+  NOTIFY_ADMINS_ON_STARTUP: "false"
+  DATABASE_URL: postgresql://accents:accents-local@postgres:5432/accents
+  USE_REDIS: "true"
+  REDIS_URL: redis://redis:6379/0
+  WEB_SERVER_HOST: 0.0.0.0
+  PORT: "8080"
+  RELEASE_REVISION: local
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: accents
+      POSTGRES_USER: accents
+      POSTGRES_PASSWORD: accents-local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accents -d accents"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # PostgreSQL 18+ stores versioned PGDATA below /var/lib/postgresql.
+    volumes:
+      - accents_dev_postgres:/var/lib/postgresql
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "20", "1", "--loglevel", "warning"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - accents_dev_redis:/data
+
+  migrate:
+    <<: *app-image
+    environment: *app-env
+    command: ["python", "-m", "scripts.migration_preflight", "--expected-users", "0"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *app-image
+    environment: *app-env
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  accents_dev_postgres:
+  accents_dev_redis:
