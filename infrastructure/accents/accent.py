@@ -1,181 +1,147 @@
-import os
+from __future__ import annotations
+
+import html
 import pickle
-from aiogram.utils.markdown import hbold
+from functools import lru_cache
+from pathlib import Path
+
 import spacy
+from spacy.language import Language
 
-ru_nlp = spacy.load('ru_core_news_md')
+BASE_DIR = Path(__file__).resolve().parent
 
-base_dir = os.path.dirname(os.path.abspath(__file__))
-lemmas_path = os.path.join(base_dir, "lemmas.dat")
-word_forms_path = os.path.join(base_dir, "wordforms.dat")
 
-with open(lemmas_path, mode='rb') as f:
-    lemmas = pickle.loads(f.read())
-with open(word_forms_path, mode='rb') as f:
-    wordforms = pickle.loads(f.read())
+def render_telegram_html(text: str) -> str:
+    """Escape arbitrary text for the bot-wide Telegram HTML parse mode."""
+    return html.escape(text)
+
+
+LEMMAS_PATH = BASE_DIR / "lemmas.dat"
+WORDFORMS_PATH = BASE_DIR / "wordforms.dat"
+
+
+@lru_cache(maxsize=1)
+def _nlp() -> Language:
+    return spacy.load("ru_core_news_md")
+
+
+@lru_cache(maxsize=1)
+def _accent_data() -> tuple[dict, dict]:
+    with LEMMAS_PATH.open("rb") as stream:
+        lemmas = pickle.load(stream)
+    with WORDFORMS_PATH.open("rb") as stream:
+        wordforms = pickle.load(stream)
+    return lemmas, wordforms
 
 
 class Accenter:
-    def __init__(self, text):
+    def __init__(self, text: str):
         self.text = text
-        self.lemmas = lemmas
-        self.wordforms = wordforms
-        self.vowels = {
-            'А́': hbold('A'),
-            'а́': hbold('А'),
+        self.lemmas, self.wordforms = _accent_data()
 
-            'О́': hbold('О'),
-            'о́': hbold('О'),
-
-            'Е́': hbold('Е'),
-            'е́': hbold('Е'),
-
-            'У́': hbold('У'),
-            'у́': hbold('У'),
-
-            'И́': hbold('И'),
-            'и́': hbold('И'),
-
-            'Ы́': hbold('Ы'),
-            'ы́': hbold('Ы'),
-
-            'Э́': hbold('Э'),
-            'э́': hbold('Э'),
-
-            'Ю́': hbold('Ю'),
-            'ю́': hbold('Ю'),
-
-            'Я́': hbold('Я'),
-            'я́': hbold('Я'),
-
-        }
-
-    def compatible(self, interpretation, lemma, tag):
+    def compatible(self, interpretation: str, lemma: str, tag: str) -> bool:
         if lemma in self.lemmas:
-            pos_exists = False
             possible_poses = self.lemmas[lemma]["pos"]
-            for i in range(len(possible_poses)):
-                if possible_poses[i] in tag:
-                    pos_exists = True
-                    break
-            if not pos_exists:
+            if not any(pos in tag for pos in possible_poses):
                 return False
 
         if interpretation == "canonical":
             return True
-        if "plural" in interpretation and not ("Number=Plur" in tag):
+        if "plural" in interpretation and "Number=Plur" not in tag:
             return False
-        if "singular" in interpretation and not ("Number=Sing" in tag):
+        if "singular" in interpretation and "Number=Sing" not in tag:
             return False
-        if not ("nominative" in interpretation) and ("Case=Nom" in tag):
+        if "nominative" not in interpretation and "Case=Nom" in tag:
             return False
-        if not ("genitive" in interpretation) and ("Case=Gen" in tag):
+        if "genitive" not in interpretation and "Case=Gen" in tag:
             return False
-        if not ("dative" in interpretation) and ("Case=Dat" in tag):
+        if "dative" not in interpretation and "Case=Dat" in tag:
             return False
-        if not ("accusative" in interpretation) and ("Case=Acc" in tag):
-            adj = False
-            if "ADJ" in tag and "Animacy=Inan" in tag:
-                adj = True
-            if not adj:
+        if "accusative" not in interpretation and "Case=Acc" in tag:
+            if not ("ADJ" in tag and "Animacy=Inan" in tag):
                 return False
-        if not ("instrumental" in interpretation) and ("Case=Ins" in tag):
+        if "instrumental" not in interpretation and "Case=Ins" in tag:
             return False
-        if not ("prepositional" in interpretation) and not ("locative" in interpretation) and ("Case=Loc" in tag):
+        if (
+            "prepositional" not in interpretation
+            and "locative" not in interpretation
+            and "Case=Loc" in tag
+        ):
             return False
-        if (("present" in interpretation) or ("future" in interpretation)) and ("Tense=Past" in tag):
+        if ("present" in interpretation or "future" in interpretation) and "Tense=Past" in tag:
             return False
-        if (("past" in interpretation) or ("future" in interpretation)) and ("Tense=Pres" in tag):
+        if ("past" in interpretation or "future" in interpretation) and "Tense=Pres" in tag:
             return False
-        if (("past" in interpretation) or ("present" in interpretation)) and ("Tense=Fut" in tag):
-            return False
-
-        return True
+        return not (
+            ("past" in interpretation or "present" in interpretation) and "Tense=Fut" in tag
+        )
 
     @staticmethod
-    def derive_single_accentuation(interpretations):
-        if len(interpretations) == 0:
+    def derive_single_accentuation(interpretations: list[dict]) -> str | None:
+        if not interpretations:
             return None
-        res = interpretations[0]["accentuated"]
-        for i in range(1, len(interpretations)):
-            if interpretations[i]["accentuated"] != res:
-                return None
-        return res
+        result = interpretations[0]["accentuated"]
+        if any(item["accentuated"] != result for item in interpretations[1:]):
+            return None
+        return result
 
-    def accentuate_word(self, word):
-        if ("tag" in word) and ("PROPN" in word["tag"]):
+    def accentuate_word(self, word: dict) -> str:
+        if "tag" in word and "PROPN" in word["tag"]:
+            return word["token"]
+        if word["is_punctuation"] or "interpretations" not in word:
             return word["token"]
 
-        if word["is_punctuation"] or (not "interpretations" in word):
-            return word["token"]
-        else:
-            res = self.derive_single_accentuation(word["interpretations"])
-            if res is not None:
-                return res
-            else:
-                compatible_interpretations = []
-                for i in range(len(word["interpretations"])):
-                    if self.compatible(word["interpretations"][i]["form"],
-                                       word["interpretations"][i]["lemma"],
-                                       word["tag"]):
-                        compatible_interpretations.append(word["interpretations"][i])
-                res = self.derive_single_accentuation(compatible_interpretations)
+        result = self.derive_single_accentuation(word["interpretations"])
+        if result is not None:
+            return result
 
-                if not (res is None):
-                    return res
-                else:
-                    new_compatible_interpretations = []
-                    for i in range(len(compatible_interpretations)):
-                        if compatible_interpretations[i]["lemma"] == word["lemma"]:
-                            new_compatible_interpretations.append(compatible_interpretations[i])
-                    res = self.derive_single_accentuation(new_compatible_interpretations)
-                    if not (res is None):
-                        return res
-                    else:
-                        return word["token"]
+        compatible = [
+            item
+            for item in word["interpretations"]
+            if self.compatible(item["form"], item["lemma"], word["tag"])
+        ]
+        result = self.derive_single_accentuation(compatible)
+        if result is not None:
+            return result
 
-    def tokenize(self, text):
-        res = []
-        doc = ru_nlp(text)
-        for token in doc:
-            if token.pos_ != 'PUNCT':
-                word = {"token": token.text, "tag": token.tag_}
-                if word["token"] in self.wordforms:
-                    word["interpretations"] = self.wordforms[word["token"]]
-                if word["token"].lower() in self.wordforms:
-                    word["interpretations"] = self.wordforms[word["token"].lower()]
+        same_lemma = [item for item in compatible if item["lemma"] == word["lemma"]]
+        return self.derive_single_accentuation(same_lemma) or word["token"]
+
+    def tokenize(self, text: str) -> list[dict]:
+        result: list[dict] = []
+        for token in _nlp()(text):
+            if token.pos_ != "PUNCT":
+                word: dict = {"token": token.text, "tag": token.tag_}
+                interpretations = self.wordforms.get(word["token"])
+                if interpretations is None:
+                    interpretations = self.wordforms.get(word["token"].lower())
+                if interpretations is not None:
+                    word["interpretations"] = interpretations
                 word["lemma"] = token.lemma_
                 word["is_punctuation"] = False
                 word["uppercase"] = word["token"].upper() == word["token"]
-                word["starts_with_a_capital_letter"] = word["token"][0].upper() == word["token"][0]
+                word["starts_with_a_capital_letter"] = word["token"][0].isupper()
             else:
                 word = {"token": token.text, "is_punctuation": True}
             word["whitespace"] = token.whitespace_
-            res.append(word)
-        return res
+            result.append(word)
+        return result
 
-    def accentuate(self, text):
-        res = ""
-        words = self.tokenize(text)
-        for i in range(len(words)):
-            accentuated = self.accentuate_word(words[i])
-            if "starts_with_a_capital_letter" in words[i] and words[i]["starts_with_a_capital_letter"]:
+    def accentuate(self, text: str) -> str:
+        result = ""
+        for word in self.tokenize(text):
+            accentuated = self.accentuate_word(word)
+            if word.get("starts_with_a_capital_letter"):
                 accentuated = accentuated.capitalize()
-            if "uppercase" in words[i] and words[i]["uppercase"]:
+            if word.get("uppercase"):
                 accentuated = accentuated.upper()
-            res += accentuated
-            res += words[i]["whitespace"]
-        return res
+            result += accentuated + word["whitespace"]
+        return result
 
     def __str__(self) -> str:
-        text = self.accentuate(self.text)
-        if len(text) <= 200:
-            return text
+        # All bot messages use Telegram HTML parse mode. Escape user-controlled
+        # text after accentuation so inputs such as "<b>" cannot become markup.
+        return render_telegram_html(self.accentuate(self.text))
 
-        for k, v in self.vowels.items():
-            text = text.replace(k, v)
-
-        return text
-
-    def __repr__(self):
-        return self.__str__()
+    def __repr__(self) -> str:
+        return str(self)

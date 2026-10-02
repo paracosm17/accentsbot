@@ -1,0 +1,409 @@
+name: accentsbot
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: accentsbot-${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a push while an external deployment may be in progress.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.13.15"
+  UV_VERSION: "0.12.19"
+  REGISTRY: ghcr.io
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install Python
+        run: uv python install "${PYTHON_VERSION}"
+
+      - name: Create virtual environment
+        run: uv venv --python "${PYTHON_VERSION}"
+
+      - name: Install dependencies
+        run: uv pip install --python .venv/bin/python -r requirements-dev.txt
+
+      - name: Run local-equivalent quality gate
+        run: make check
+
+  postgres-preflight:
+    name: PostgreSQL 18 migration preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: quality
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: accents_ci
+          POSTGRES_USER: accents_ci
+          POSTGRES_PASSWORD: accents_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accents_ci -d accents_ci"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://accents_ci:accents_ci@127.0.0.1:5432/accents_ci
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
+
+      - name: Install Python
+        run: uv python install "${PYTHON_VERSION}"
+
+      - name: Create virtual environment
+        run: uv venv --python "${PYTHON_VERSION}"
+
+      - name: Install runtime dependencies
+        run: uv pip install --python .venv/bin/python -r requirements.txt
+
+      - name: Apply migrations twice to empty PostgreSQL 18
+        run: .venv/bin/python -m scripts.migration_preflight --expected-users 0
+
+      - name: Verify resulting schema
+        run: .venv/bin/python -m scripts.db_verify --expected-users 0
+
+  docker-build:
+    name: Build pull request image
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [quality, postgres-preflight]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build image without publishing
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          pull: true
+          push: false
+          build-args: |
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: Publish immutable image
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [quality, postgres-preflight]
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.build.outputs.digest }}
+      image_ref: ${{ steps.image-ref.outputs.value }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Resolve image name
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          echo "name=${IMAGE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish Git-SHA image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          pull: true
+          push: true
+          build-args: |
+            VCS_REF=${{ github.sha }}
+          tags: |
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export immutable release identity
+        id: image-ref
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          IMAGE_REF="${IMAGE_NAME}@${IMAGE_DIGEST}"
+          echo "value=${IMAGE_REF}" >> "${GITHUB_OUTPUT}"
+          {
+            echo '## accentsbot release'
+            echo
+            echo "Git commit: \`${GITHUB_SHA}\`"
+            echo
+            echo 'Published immutable image:'
+            echo
+            echo "\`${IMAGE_REF}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  verify-image:
+    name: Verify exact published image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: publish
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and run exact digest in smoke mode
+        shell: bash
+        env:
+          IMAGE_REF: ${{ needs.publish.outputs.image_ref }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${IMAGE_REF}" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]]
+          docker pull "${IMAGE_REF}"
+
+          SUFFIX="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          NETWORK="accents-ci-${SUFFIX}"
+          PG="accents-ci-postgres-${SUFFIX}"
+          REDIS="accents-ci-redis-${SUFFIX}"
+          APP="accents-ci-app-${SUFFIX}"
+
+          cleanup() {
+            status=$?
+            if [[ $status -ne 0 ]]; then
+              docker logs "${APP}" 2>/dev/null || true
+              docker logs "${PG}" 2>/dev/null || true
+              docker logs "${REDIS}" 2>/dev/null || true
+            fi
+            docker rm -f "${APP}" "${PG}" "${REDIS}" >/dev/null 2>&1 || true
+            docker network rm "${NETWORK}" >/dev/null 2>&1 || true
+            exit $status
+          }
+          trap cleanup EXIT
+
+          docker network create "${NETWORK}" >/dev/null
+          docker run -d --rm \
+            --name "${PG}" \
+            --network "${NETWORK}" \
+            --network-alias postgres \
+            -e POSTGRES_DB=accents \
+            -e POSTGRES_USER=accents \
+            -e POSTGRES_PASSWORD=accents \
+            postgres:18-alpine >/dev/null
+
+          docker run -d --rm \
+            --name "${REDIS}" \
+            --network "${NETWORK}" \
+            --network-alias redis \
+            redis:7.4-alpine >/dev/null
+
+          for _ in $(seq 1 30); do
+            docker exec "${PG}" pg_isready -U accents -d accents >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec "${PG}" pg_isready -U accents -d accents >/dev/null
+
+          for _ in $(seq 1 30); do
+            [[ "$(docker exec "${REDIS}" redis-cli ping 2>/dev/null || true)" == PONG ]] && break
+            sleep 1
+          done
+          [[ "$(docker exec "${REDIS}" redis-cli ping)" == PONG ]]
+
+          docker run --rm \
+            --network "${NETWORK}" \
+            -e DATABASE_URL=postgresql://accents:accents@postgres:5432/accents \
+            "${IMAGE_REF}" \
+            python -m scripts.migration_preflight --expected-users 0
+
+          docker run -d --rm \
+            --name "${APP}" \
+            --network "${NETWORK}" \
+            -p 127.0.0.1:18080:8080 \
+            -e APP_ENV=ci \
+            -e APP_SMOKE_MODE=true \
+            -e DATABASE_URL=postgresql://accents:accents@postgres:5432/accents \
+            -e USE_REDIS=true \
+            -e REDIS_URL=redis://redis:6379/0 \
+            "${IMAGE_REF}" >/dev/null
+
+          python3 -m scripts.check_release_revision \
+            --url http://127.0.0.1:18080 \
+            --expected-revision "${GITHUB_SHA}" \
+            --timeout 180 \
+            --interval 3
+
+  deploy-dev:
+    name: Deploy DEV
+    if: github.ref == 'refs/heads/dev' && vars.DEPLOY_DEV_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [publish, verify-image]
+    environment: dev
+    concurrency:
+      group: accentsbot-deploy-dev
+      cancel-in-progress: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Guard against stale branch deployment
+        id: revision
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 -m scripts.check_branch_revision
+          status=$?
+          set -e
+          if [[ $status -eq 3 ]]; then
+            echo 'deploy=false' >> "${GITHUB_OUTPUT}"
+            echo 'A newer dev commit exists; this deployment is skipped.' >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          [[ $status -eq 0 ]]
+          echo 'deploy=true' >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy exact digest through restricted SSH transport
+        if: steps.revision.outputs.deploy == 'true'
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KEY_FINGERPRINT: ${{ vars.DEPLOY_SSH_KEY_FINGERPRINT }}
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          COOLIFY_API_TOKEN_RW: ${{ secrets.COOLIFY_API_TOKEN_RW }}
+          COOLIFY_API_TOKEN_DEPLOY: ${{ secrets.COOLIFY_API_TOKEN_DEPLOY }}
+        run: ./ops/deploy-release-via-tunnel.sh '${{ vars.COOLIFY_RESOURCE_UUID }}' '${{ needs.publish.outputs.image_ref }}'
+
+      - name: Verify deployed DEV revision
+        if: steps.revision.outputs.deploy == 'true'
+        run: >-
+          python3 -m scripts.check_release_revision
+          --url '${{ vars.APP_PUBLIC_URL }}'
+          --expected-revision '${{ github.sha }}'
+          --timeout 300
+
+  deploy-production:
+    name: Deploy production
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_PRODUCTION_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [publish, verify-image]
+    environment: production
+    concurrency:
+      group: accentsbot-deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Guard against stale branch deployment
+        id: revision
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 -m scripts.check_branch_revision
+          status=$?
+          set -e
+          if [[ $status -eq 3 ]]; then
+            echo 'deploy=false' >> "${GITHUB_OUTPUT}"
+            echo 'A newer main commit exists; this deployment is skipped.' >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          [[ $status -eq 0 ]]
+          echo 'deploy=true' >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy exact digest through restricted SSH transport
+        if: steps.revision.outputs.deploy == 'true'
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KEY_FINGERPRINT: ${{ vars.DEPLOY_SSH_KEY_FINGERPRINT }}
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          COOLIFY_API_TOKEN_RW: ${{ secrets.COOLIFY_API_TOKEN_RW }}
+          COOLIFY_API_TOKEN_DEPLOY: ${{ secrets.COOLIFY_API_TOKEN_DEPLOY }}
+        run: ./ops/deploy-release-via-tunnel.sh '${{ vars.COOLIFY_RESOURCE_UUID }}' '${{ needs.publish.outputs.image_ref }}'
+
+      - name: Verify deployed production revision
+        if: steps.revision.outputs.deploy == 'true'
+        run: >-
+          python3 -m scripts.check_release_revision
+          --url '${{ vars.APP_PUBLIC_URL }}'
+          --expected-revision '${{ github.sha }}'
+          --timeout 300
