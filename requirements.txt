@@ -1,9 +1,11 @@
-aiogram
-environs
-redis
-betterlogging
-sqlalchemy
-aiogram_dialog
-alembic
-asyncpg
-spacy
+aiogram==3.26.0
+aiogram-dialog==2.6.0
+aiohttp==3.13.5
+alembic==1.18.4
+asyncpg==0.31.0
+click==8.1.8
+environs==14.6.0
+redis==7.3.0
+SQLAlchemy==2.0.48
+spacy==3.8.11
+ru-core-news-md @ https://github.com/explosion/spacy-models/releases/download/ru_core_news_md-3.8.0/ru_core_news_md-3.8.0-py3-none-any.whl

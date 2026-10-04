@@ -1,7 +1,8 @@
-from datetime import datetime, date, timedelta
-from typing import Optional
+from __future__ import annotations
 
-from sqlalchemy import select, func
+from datetime import date, datetime, time, timedelta
+
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from infrastructure.database.models import User
@@ -10,13 +11,14 @@ from infrastructure.database.repo.base import BaseRepo
 
 class UserRepo(BaseRepo):
     async def update_or_create_user(
-            self,
-            user_id: int,
-            full_name: str,
-            language_code: str,
-            username: Optional[str] = None,
-    ):
-        insert_user_statement = select(User).from_statement(
+        self,
+        user_id: int,
+        full_name: str,
+        language_code: str | None,
+        username: str | None = None,
+    ) -> User:
+        now = datetime.now()
+        statement = select(User).from_statement(
             insert(User)
             .values(
                 user_id=user_id,
@@ -24,123 +26,121 @@ class UserRepo(BaseRepo):
                 full_name=full_name,
                 language_code=language_code,
                 active=True,
-                last_active=datetime.now()
+                last_active=now,
             )
             .returning(User)
             .on_conflict_do_update(
                 index_elements=[User.user_id],
-                set_=dict(
-                    username=username,
-                    full_name=full_name,
-                    language_code=language_code,
-                    active=True,
-                    last_active=datetime.now()
-                ),
+                set_={
+                    "username": username,
+                    "full_name": full_name,
+                    "language_code": language_code,
+                    "active": True,
+                    "last_active": now,
+                },
             )
         )
-        result = await self.session.execute(insert_user_statement)
-
+        result = await self.session.execute(statement)
         await self.session.commit()
         return result.scalar_one()
 
-    async def ban_user(self, user_id: int):
-        user = await self.session.execute(select(User).where(User.user_id == user_id))
-        user_scalar: User = user.scalar()
-        if user_scalar is None:
+    async def ban_user(self, user_id: int) -> bool:
+        user = await self.session.scalar(select(User).where(User.user_id == user_id))
+        if user is None:
             return False
-        user_scalar.banned = True
+        user.banned = True
         await self.session.commit()
         return True
 
-    async def unban_user(self, user_id: int):
-        user = await self.session.execute(select(User).where(User.user_id == user_id))
-        user_scalar: User = user.scalar()
-        if user_scalar is None:
+    async def unban_user(self, user_id: int) -> bool:
+        user = await self.session.scalar(select(User).where(User.user_id == user_id))
+        if user is None:
             return False
-        user_scalar.banned = False
+        user.banned = False
         await self.session.commit()
         return True
 
     async def active_user(self, user_id: int, active: bool) -> bool:
-        user = await self.session.execute(select(User).where(User.user_id == user_id))
-        user_scalar: User = user.scalar()
-        if user_scalar is None:
+        user = await self.session.scalar(select(User).where(User.user_id == user_id))
+        if user is None:
             return False
-        user_scalar.active = active
+        user.active = active
         await self.session.commit()
         return True
 
     async def do_user_exists(self, user_id: int) -> bool:
-        user = await self.session.execute(select(User).where(User.user_id == user_id))
-        user_scalar: User = user.scalar()
-        if user_scalar is None:
-            return False
-        return True
+        return (
+            await self.session.scalar(select(User.user_id).where(User.user_id == user_id))
+            is not None
+        )
 
     async def users_count(self, only_active: bool = False) -> int:
-        if not only_active:
-            users = await self.session.execute(select(func.count()).select_from(User))
-        else:
-            users = await self.session.execute(select(func.count()).select_from(User).where(User.active==True))
-        return users.scalar()
+        statement = select(func.count()).select_from(User)
+        if only_active:
+            statement = statement.where(User.active.is_(True))
+        return int((await self.session.execute(statement)).scalar_one())
 
-    async def get_all_users_ids(self):
+    async def get_all_users_ids(self) -> list[int]:
         users = await self.session.execute(select(User.user_id))
-        return users.scalars().all()
+        return list(users.scalars().all())
 
-    async def get_active_users(self, count: int, random: bool = True, after_ege: bool = True):
-        if random:
-            if after_ege:
-                users = await self.session.execute(
-                    select(User.user_id).where(User.active == True).filter(
-                        func.date(User.created_at) > date(year=2023, month=6, day=1)
-                    ).order_by(func.random()).limit(count)
-                )
-            else:
-                users = await self.session.execute(
-                    select(User.user_id).where(User.active == True).order_by(func.random()).limit(count)
-                )
-        else:
-            if after_ege:
-                users = await self.session.execute(
-                    select(User.user_id).where(User.active == True).filter(
-                        func.date(User.created_at) > date(year=2023, month=6, day=1)
-                    ).order_by(User.created_at.desc()).limit(count)
-                )
-            else:
-                users = await self.session.execute(
-                    select(User.user_id).where(User.active == True).order_by(User.created_at.desc()).limit(count)
-                )
-        return users.scalars().all()
+    async def get_active_users(
+        self,
+        count: int,
+        random: bool = True,
+        after_ege: bool = True,
+    ) -> list[int]:
+        if count <= 0:
+            return []
 
-    async def add_word(self, user_id: int):
-        user = await self.session.execute(select(User).where(User.user_id == user_id))
-        user = user.scalar()
-        user.words += 1
+        statement = select(User.user_id).where(User.active.is_(True))
+        if after_ege:
+            # Preserve the legacy SQL semantics: DATE(created_at) > 2023-06-01.
+            statement = statement.where(User.created_at >= datetime(2023, 6, 2))
+        statement = statement.order_by(func.random() if random else User.created_at.desc()).limit(
+            count
+        )
+        users = await self.session.execute(statement)
+        return list(users.scalars().all())
+
+    async def add_word(self, user_id: int) -> int:
+        statement = (
+            update(User)
+            .where(User.user_id == user_id)
+            .values(words=User.words + 1)
+            .returning(User.words)
+        )
+        words = (await self.session.execute(statement)).scalar_one_or_none()
+        if words is None:
+            raise LookupError(f"user {user_id} is missing")
         await self.session.commit()
-        return user.words
+        return int(words)
 
     async def get_words_count_by_id(self, user_id: int) -> int:
-        user = await self.session.execute(select(User).where(User.user_id == user_id))
-        user = user.scalar()
-        return user.words
+        words = await self.session.scalar(select(User.words).where(User.user_id == user_id))
+        if words is None:
+            raise LookupError(f"user {user_id} is missing")
+        return int(words)
 
-    async def get_biggest_words(self):
+    async def get_biggest_words(self) -> list[User]:
         result = await self.session.execute(select(User).order_by(User.words.desc()).limit(20))
-        return result.scalars().all()
+        return list(result.scalars().all())
+
+    @staticmethod
+    def _calendar_window_start(days: int) -> datetime:
+        if days <= 0:
+            raise ValueError("days must be positive")
+        # Preserve the legacy DATE(column) > CURRENT_DATE - days behaviour while
+        # keeping the timestamp column usable by PostgreSQL indexes.
+        first_date = date.today() - timedelta(days=days - 1)
+        return datetime.combine(first_date, time.min)
 
     async def get_users_created_count_by_days(self, days: int) -> int:
-        users = await self.session.execute(
-            select(func.count()).select_from(User).filter(
-                func.date(User.created_at) > date.today() - timedelta(days=days)
-            )
-        )
-        return users.scalar()
+        threshold = self._calendar_window_start(days)
+        statement = select(func.count()).select_from(User).where(User.created_at >= threshold)
+        return int((await self.session.execute(statement)).scalar_one())
 
     async def get_users_active_count_by_days(self, days: int) -> int:
-        users = await self.session.execute(
-            select(func.count()).select_from(User).filter(
-                func.date(User.last_active) > date.today() - timedelta(days=days)
-            )
-        )
-        return users.scalar()
+        threshold = self._calendar_window_start(days)
+        statement = select(func.count()).select_from(User).where(User.last_active >= threshold)
+        return int((await self.session.execute(statement)).scalar_one())

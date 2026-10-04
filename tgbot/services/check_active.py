@@ -1,59 +1,45 @@
 import asyncio
 import logging
-from typing import Union
+from collections.abc import Sequence
 
-from aiogram import Bot
-from aiogram import exceptions
+from aiogram import Bot, exceptions
 
 from infrastructure.database.repo.requests import RequestsRepo
 
+logger = logging.getLogger(__name__)
+MAX_RETRIES = 3
 
-async def send_chat_action(
-        bot: Bot,
-        user_id: Union[int, str],
-        repo: RequestsRepo
-) -> bool:
-    try:
-        await bot.send_chat_action(
-            user_id,
-            "typing"
-        )
-        await repo.users.active_user(user_id, active=True)
-    except exceptions.TelegramForbiddenError:
-        logging.error(f"Target [ID:{user_id}]: got TelegramForbiddenError")
-        await repo.users.active_user(user_id, active=False)
-    except exceptions.TelegramRetryAfter as e:
-        logging.error(
-            f"Target [ID:{user_id}]: Flood limit is exceeded. Sleep {e.retry_after} seconds."
-        )
-        await asyncio.sleep(e.retry_after)
-        return await send_chat_action(bot, user_id, repo)
-    except exceptions.TelegramBadRequest as e:
-        logging.error(f"Target [ID:{user_id}]: failed - {e.message}")
-        await repo.users.active_user(user_id, active=False)
-    except exceptions.TelegramAPIError as e:
-        logging.error(f"Target [ID:{user_id}]: failed - {e.message}")
-        await repo.users.active_user(user_id, active=False)
-    else:
-        logging.info(f"Target [ID:{user_id}]: success")
-        return True
+
+async def send_chat_action(bot: Bot, user_id: int | str, repo: RequestsRepo) -> bool:
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            await bot.send_chat_action(user_id, "typing")
+            await repo.users.active_user(int(user_id), active=True)
+            return True
+        except exceptions.TelegramForbiddenError:
+            await repo.users.active_user(int(user_id), active=False)
+            return False
+        except exceptions.TelegramRetryAfter as exc:
+            if attempt >= MAX_RETRIES:
+                logger.error("Target [ID:%s] exhausted flood retries", user_id)
+                return False
+            await asyncio.sleep(float(exc.retry_after) + 0.1)
+        except (exceptions.TelegramBadRequest, exceptions.TelegramAPIError) as exc:
+            logger.warning("Target [ID:%s] activity check failed: %s", user_id, exc)
+            await repo.users.active_user(int(user_id), active=False)
+            return False
     return False
 
 
 async def check_active_users(
-        bot: Bot,
-        users: list[Union[str, int]],
-        repo: RequestsRepo
+    bot: Bot,
+    users: Sequence[int | str],
+    repo: RequestsRepo,
 ) -> int:
     count = 0
-    try:
-        for user_id in users:
-            if await send_chat_action(bot, user_id, repo):
-                count += 1
-            await asyncio.sleep(
-                0.05
-            )
-    finally:
-        logging.info(f"{count} юзеров активно")
-
+    for user_id in users:
+        if await send_chat_action(bot, user_id, repo):
+            count += 1
+        await asyncio.sleep(0.05)
+    logger.info("Activity check complete: active=%d requested=%d", count, len(users))
     return count
